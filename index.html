@@ -1,0 +1,1572 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="data:," />
+    <title>sarahOS</title>
+    <style>
+      /* ================================================================
+         1. TOKENS — every number in the page traces to this block or
+         to whole-cell geometry. 1px is the page's single line weight
+         throughout: grid marks, panel borders and thumbstick rings
+         are 1 CSS px strokes, and the floor grid's lines carry a
+         1 CSS px full-strength core (script section 4).
+         ================================================================ */
+      :root {
+        /* — grid —
+           One measurement drives both axes, so a cell can never
+           stretch: the cell is whichever fit — width or height — is
+           tighter, snapped DOWN to a whole pixel at the source, so
+           the canvas box, the corner marks and the closing edges all
+           derive from one integer cell size and coincide on the
+           pixel grid by construction; the sub-cell remainder becomes
+           slack in the margins around the canvas. The canvas size is
+           derived once from the snapped cell; the layer's box and
+           the portrait offset both read it, so they can never drift
+           apart. Only the corners of the squares are drawn: each
+           corner mark is two 1px segments lying along the cell's
+           edges from that corner, each --grid-corner long.
+           --grid-corner is the cell's tenth snapped to the NEAREST
+           whole pixel, for the same reason the cell itself is
+           snapped: a fractional corner is floored by the rasterizer
+           at both ends of an arm, so arms at a crossing would render
+           unevenly. On the pixel grid the tenth is the nearest
+           integer to it. */
+        --cols: 32;
+        --rows: 20;
+        --cell: round(down, min(calc(100vw / var(--cols)), calc(100dvh / var(--rows))), 1px);
+        --canvas-w: calc(var(--cell) * var(--cols));
+        --canvas-h: calc(var(--cell) * var(--rows));
+        --grid-line: #c0c0c0;
+        --grid-corner: round(calc(var(--cell) * 0.1), 1px);
+
+        /* — palette: the circle of 7 —
+           Every chromatic color derives from the reference Orange:
+           its saturation and lightness (93% / 54%) kept, the hue set
+           by rule at a spectrum position. In circle order: Red (0°),
+           Orange (33°), Yellow (60°), Green (120°), Blue (213°),
+           Violet (270°), Magenta (300°). No chromatic color enters
+           any other way. A panel stores a color index 0–6 into this
+           circle, set per panel as --panel-color by the script. */
+        --red: #f71a1a;
+        --orange: #f7931a;
+        --yellow: #f7f71a;
+        --green: #1af71a;
+        --blue: #1a7ef7;
+        --violet: #891af7;
+        --magenta: #f71af7;
+
+        /* — panel corners —
+           One spacing rule for the two corner elements (×, grip):
+           the same hit square at each corner, ink set the same
+           distance inside it. The grip's ink follows the panel
+           color; the × is the derived red on every panel. Both sit
+           on the panel's white fill. */
+        --corner-hit: 24px;
+        --corner-inset: 3px;
+
+        /* — levels — */
+        --level-ouranos: #ffffff;
+        --level-gaia: #808080;
+        --level-hades: #000000;
+
+        /* — base — */
+        --bg: #ffffff;
+        --text: #000000;
+        color-scheme: light;
+      }
+
+      /* portrait: swap X and Y */
+      @media (max-aspect-ratio: 1/1) {
+        :root {
+          --cols: 20;
+          --rows: 32;
+        }
+      }
+
+      /* ================================================================
+         2. BASE
+         ================================================================ */
+      * { box-sizing: border-box; }
+
+      html {
+        height: 100dvh;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100dvh;
+        overflow: hidden;
+        background-color: var(--bg);
+        color: var(--text);
+        font-family: "Lucida Console", "Lucida Sans Console", "Lucida Sans Typewriter", "Lucida Typewriter", Monaco, "DejaVu Sans Mono", Consolas, "Courier New", monospace;
+      }
+
+      /* ================================================================
+         3. CANVAS — a layer of exactly cols × rows square cells,
+         anchored to the top below the safe area and centered
+         horizontally (left:0 + right:0 + margin-inline:auto splits
+         the slack evenly for a fixed layer of definite width — no
+         transform, whose percentage resolves against the layer
+         itself). It always fits the viewport, so nothing scrolls;
+         slack collects as a clean band at the bottom, where the
+         host's toolbar floats on iOS.
+
+         The canvas sits above the front layer (z-index 1) in both
+         views, so presses on the canvas and on the panels inside it
+         land on the canvas, and presses on the page around it land
+         on the front layer.
+
+         Only cell corners are drawn, in three pieces that share the
+         one dashed pattern. The pattern's two segments in a cell
+         are NOT equal, by one pixel, and that is the symmetry: the
+         segment starting at a corner is --grid-corner + 1px because
+         it carries the corner's own pixel (the crossing pixel of
+         the line it lies on), while the segment ending at a corner
+         is --grid-corner and stops one pixel short of it. So at
+         every crossing each arm protrudes exactly --grid-corner
+         beyond the crossing pixel — left, right, up and down
+         alike — and the empty middle takes what remains:
+
+         · ::before paints the horizontal segments: its background
+           is the dashed pattern along x, and its mask keeps only
+           the 1px row at the top of each cell, so the dashes land
+           exactly on the row lines (the top border included).
+         · ::after is the same construction turned 90°: dashes along
+           y, masked to the 1px column at the left of each cell
+           (the left border included).
+         · The layer's own background paints the two closing edges
+           the masks cannot reach — the bottom edge as a 1px-tall
+           dashed strip along the bottom, the right edge as a
+           1px-wide dashed strip along the right.
+
+         One pixel of the picture cannot come from the pattern: on
+         the right and bottom borders the crossing pixel is the
+         canvas's LAST pixel, so the arm ending there would
+         protrude one pixel less than every other arm. Each piece
+         therefore carries one extra layer that paints exactly that
+         pixel — the single column (or row) --grid-corner + 1px in
+         from the far edge, visible only where its piece already
+         draws: through the masks for ::before and ::after, inside
+         the 1px strips for the closing edges.
+
+         Where the pieces meet, the picture is exact: at an interior
+         intersection the four cells' segments form a crosshair with
+         arms of --grid-corner in all four directions; on the border
+         only the inward segments exist (outer corners read as L
+         brackets, border vertices as inward T's); nothing is drawn
+         outside the canvas box, which overflow:hidden enforces.
+
+         The layer is also the panels' home and their pointer
+         surface: panels are absolutely positioned children above
+         the marks, so they inherit the canvas box and its clipping,
+         and a press anywhere on the layer that misses every panel
+         is a press on empty canvas.
+         ================================================================ */
+      .grid {
+        position: fixed;
+        z-index: 2;
+        top: env(safe-area-inset-top, 0px);
+        left: 0;
+        right: 0;
+        margin-inline: auto;
+        width: var(--canvas-w);
+        height: var(--canvas-h);
+        overflow: hidden;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+        background-image:
+          repeating-linear-gradient(to right,
+            var(--grid-line) 0 calc(var(--grid-corner) + 1px),
+            transparent calc(var(--grid-corner) + 1px) calc(var(--cell) - var(--grid-corner)),
+            var(--grid-line) calc(var(--cell) - var(--grid-corner)) var(--cell)),
+          linear-gradient(to right,
+            transparent 0 calc(100% - var(--grid-corner) - 1px),
+            var(--grid-line) calc(100% - var(--grid-corner) - 1px) calc(100% - var(--grid-corner)),
+            transparent calc(100% - var(--grid-corner)) 100%),
+          repeating-linear-gradient(to bottom,
+            var(--grid-line) 0 calc(var(--grid-corner) + 1px),
+            transparent calc(var(--grid-corner) + 1px) calc(var(--cell) - var(--grid-corner)),
+            var(--grid-line) calc(var(--cell) - var(--grid-corner)) var(--cell)),
+          linear-gradient(to bottom,
+            transparent 0 calc(100% - var(--grid-corner) - 1px),
+            var(--grid-line) calc(100% - var(--grid-corner) - 1px) calc(100% - var(--grid-corner)),
+            transparent calc(100% - var(--grid-corner)) 100%);
+        background-size: 100% 1px, 100% 1px, 1px 100%, 1px 100%;
+        background-position: 0 100%, 0 100%, 100% 0, 100% 0;
+        background-repeat: no-repeat, no-repeat, no-repeat, no-repeat;
+      }
+
+      .grid::before,
+      .grid::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .grid::before {
+        background-image:
+          repeating-linear-gradient(to right,
+            var(--grid-line) 0 calc(var(--grid-corner) + 1px),
+            transparent calc(var(--grid-corner) + 1px) calc(var(--cell) - var(--grid-corner)),
+            var(--grid-line) calc(var(--cell) - var(--grid-corner)) var(--cell)),
+          linear-gradient(to right,
+            transparent 0 calc(100% - var(--grid-corner) - 1px),
+            var(--grid-line) calc(100% - var(--grid-corner) - 1px) calc(100% - var(--grid-corner)),
+            transparent calc(100% - var(--grid-corner)) 100%);
+        -webkit-mask-image:
+          repeating-linear-gradient(to bottom,
+            #000000 0 1px, transparent 1px var(--cell));
+        mask-image:
+          repeating-linear-gradient(to bottom,
+            #000000 0 1px, transparent 1px var(--cell));
+      }
+
+      .grid::after {
+        background-image:
+          repeating-linear-gradient(to bottom,
+            var(--grid-line) 0 calc(var(--grid-corner) + 1px),
+            transparent calc(var(--grid-corner) + 1px) calc(var(--cell) - var(--grid-corner)),
+            var(--grid-line) calc(var(--cell) - var(--grid-corner)) var(--cell)),
+          linear-gradient(to bottom,
+            transparent 0 calc(100% - var(--grid-corner) - 1px),
+            var(--grid-line) calc(100% - var(--grid-corner) - 1px) calc(100% - var(--grid-corner)),
+            transparent calc(100% - var(--grid-corner)) 100%);
+        -webkit-mask-image:
+          repeating-linear-gradient(to right,
+            #000000 0 1px, transparent 1px var(--cell));
+        mask-image:
+          repeating-linear-gradient(to right,
+            #000000 0 1px, transparent 1px var(--cell));
+      }
+
+      /* portrait: sit the canvas halfway between top-anchored and
+         fully centered — the top band is one quarter of the vertical
+         slack (viewport height − canvas height), the bottom band
+         takes the remaining three quarters. The top edge still
+         clears the viewport's top edge, so no corner mark touches
+         it and the host chrome samples the page background there.
+         Landscape keeps the top anchoring. */
+      @media (max-aspect-ratio: 1/1) {
+        .grid {
+          top: calc((100dvh - var(--canvas-h)) / 4);
+        }
+      }
+
+      /* ================================================================
+         4. PANELS — rectangles measured in whole cells: a panel is
+         {col, row, w, h, color} and the script positions it at
+         col×cell, row×cell with a w×cell by h×cell box, so it always
+         sits exactly on the grid. The fill is white and opaque, so
+         the corner marks behind it are covered completely; the 1px
+         border takes the panel's circle color, set per panel as
+         --panel-color by the script. The panel clips its children.
+
+         Cursor language (pointer devices only; touch has no cursor
+         to dress): a panel body reads grab, and while that panel is
+         being dragged it reads grabbing — set from the drag state
+         itself (the .dragging class, mirrored on the grid because
+         the grid holds the pointer capture, so its cursor is the
+         one in force wherever the pointer runs during the drag),
+         not from :active, which can drop mid-drag. The grip reads
+         nwse-resize, likewise held on the grid for the whole
+         resize (.resizing). Everything else — the canvas and
+         the × — keeps the default cursor.
+         ================================================================ */
+      .panel {
+        --panel-color: var(--red);
+        position: absolute;
+        background: var(--bg);
+        border: 1px solid var(--panel-color);
+        overflow: hidden;
+        cursor: grab;
+        touch-action: none;
+      }
+
+      .panel.dragging,
+      .grid.dragging {
+        cursor: grabbing;
+      }
+
+      .grid.resizing {
+        cursor: nwse-resize;
+      }
+
+      /* corner elements — the × (top-right) and the resize grip
+         (bottom-right) share the one spacing rule from the tokens,
+         applied to the INK, not the boxes: each element occupies a
+         --corner-hit square anchored to its corner, and its visible
+         ink sits with its edges --corner-inset inside the panel's
+         edges, mirrored between the two corners. Both are drawn
+         geometry — the ×'s two bars, the grip's square — anchored
+         at the inset directly, so their ink is exact in every font
+         environment. */
+
+      /* delete — the × is drawn as geometry, not as a font glyph: a
+         glyph's vertical ink floats on the metrics of whichever
+         font the device substitutes, while drawn bars are anchored
+         exactly. The two bars cross at the center of an 8px ink
+         square — the grip square's size — set --corner-inset from
+         the top and right edges. Each bar is centered on that point
+         and rotated ±45°; a bar of length L and thickness T rotated
+         45° has a bounding box of (L + T) / √2 per side, so
+         L = 8√2 − T lands the ink box on 8px. */
+      .panel .del {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: var(--corner-hit);
+        height: var(--corner-hit);
+        /* cursor is inherited, so the panel's grab would reach
+           the × without this: auto restores the default cursor
+           the × is specified to keep */
+        cursor: auto;
+        touch-action: none;
+      }
+
+      .panel .del::before,
+      .panel .del::after {
+        content: "";
+        position: absolute;
+        top: calc(var(--corner-inset) + 4px);
+        right: calc(var(--corner-inset) + 4px);
+        width: 9.8px;
+        height: 1.5px;
+        background: var(--red);
+      }
+
+      .panel .del::before {
+        transform: translate(50%, -50%) rotate(45deg);
+      }
+
+      .panel .del::after {
+        transform: translate(50%, -50%) rotate(-45deg);
+      }
+
+      /* resize handle — the bottom-right corner: a --corner-hit hit
+         square; the visible grip is a small square in the panel's
+         own color set --corner-inset inside the corner. */
+      .panel .grip {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        width: var(--corner-hit);
+        height: var(--corner-hit);
+        cursor: nwse-resize;
+        touch-action: none;
+      }
+
+      .panel .grip::after {
+        content: "";
+        position: absolute;
+        right: var(--corner-inset);
+        bottom: var(--corner-inset);
+        width: 8px;
+        height: 8px;
+        background: var(--panel-color);
+      }
+
+      /* ================================================================
+         5. LEVELS — the front view and the tool view.
+         The page is always in one of three levels — Ouranos,
+         Gaia, Hades — and the tool is either up or down.
+
+         Front (tool down): the level's 3D scene fills the page
+         (the #gl canvas below), the grid marks and panels are
+         hidden, and two nav circles show over the scene: the
+         doors to the other two levels. Each
+         circle is 75% of a 2×2 spot — 1.5 cells across, centered
+         in its spot — and its fill is the color of the level it
+         leads to. Two thumbsticks also show, one at each bottom
+         corner of the canvas: a ring inscribed in a 3×3 square —
+         one cell in from the side edge, one cell up from the
+         bottom — with a knob half the ring's width at its center.
+         Ring and knob take the level's contrast tone (black on
+         Ouranos and Gaia, white on Hades), set by the script;
+         the knob's deflection is likewise the script's, applied
+         as a transform around the centered position below.
+
+         Tool (tool up): the page is white and shows exactly the
+         grid-and-panels surface — one layout of panels on the
+         corner grid, the same whichever level the tool was
+         entered from. The layout is kept in memory for the
+         session; a fresh load starts with an empty layout.
+
+         A 500ms hold on empty space toggles the tool in both
+         views: in the front it raises the tool; in the tool it
+         lowers it, back to the front of the level the tool was
+         entered from.
+         ================================================================ */
+      .grid.is-front {
+        background-image: none;
+      }
+      .grid.is-front::before,
+      .grid.is-front::after {
+        display: none;
+      }
+      /* the 3D scene — a full-page WebGL canvas under every
+         overlay, shown only in the front view; the tool view
+         hides it (the script also pauses its loop there) */
+      #gl {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        width: 100%;
+        height: 100dvh;
+        display: block;
+        touch-action: none;
+      }
+      body[data-tooling="true"] #gl {
+        display: none;
+      }
+      .front-layer {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      .nav-btn {
+        position: absolute;
+        border-radius: 50%;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        touch-action: none;
+        z-index: 50;
+      }
+      /* thumbsticks — the ring is a bordered circle over the
+         level's field; the knob is a filled circle centered in
+         it, carried by a translate(-50%, -50%) the script
+         extends with the live deflection. The knob takes no
+         presses of its own: a press anywhere on the ring is the
+         stick's (see the press machine). */
+      .thumbstick {
+        position: absolute;
+        border-radius: 50%;
+        border: 1px solid #000000;
+        padding: 0;
+        touch-action: none;
+        z-index: 50;
+        background: transparent;
+      }
+      .thumbstick-knob {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        border-radius: 50%;
+        pointer-events: none;
+        transform: translate(-50%, -50%);
+      }
+    </style>
+  </head>
+  <body data-level="gaia" data-tooling="false">
+    <canvas id="gl"></canvas>
+    <div class="front-layer" id="frontLayer"></div>
+    <div class="grid"></div>
+    <script src="now.js"></script>
+    <script src="sky/sky.js"></script>
+    <script src="gifts/gifts.js"></script>
+    <script>
+      /* ================================================================
+         sarahOS — one page in three levels, with a tool behind it.
+
+         Levels: the page stands in one level at a time — Ouranos,
+         Gaia, or Hades — and in the front view the level is a 3D scene: an infinite floor of 1 m grid lines under
+         a first-person camera at eye height, the level's color
+         all around it (section 4). Two nav circles, the doors to
+         the other levels, and two thumbsticks stand over the
+         scene; a tap on a circle travels to its level. The level
+         is remembered across loads (section 1); a first visit
+         opens on Gaia. The thumbsticks are live: the left stick
+         and WASD walk at up to 3.0 m/s, the right stick — on a
+         squared response curve — and a drag on the scene look. A
+         stick's knob deflects under its own pointer's drag and
+         springs back on release. One camera serves the whole
+         cyberspace: travelling between levels keeps its position
+         and facing and re-colors the world around it.
+
+         Panels: a panel is {col, row, w, h, color} in whole cells,
+         where color is an index 0–6 into the circle of 7; the
+         array's order is the stacking order. Pixels are derived
+         from the rendered canvas (its width ÷ its column count),
+         so a panel always matches the snapped --cell the grid is
+         drawn with, in either orientation. The tool holds ONE
+         layout for the whole page, kept in memory for the session:
+         every fresh load starts with an empty layout, and the
+         layout survives entering and leaving the tool and
+         travelling between levels within the session.
+
+         Gestures: every gesture is a single pointer, spoken
+         identically by mouse, pen, touch and trackpad through
+         Pointer Events, and judged by one press machine (section
+         5 below).
+         ================================================================ */
+      (function () {
+        "use strict";
+
+        /* ==========================================================
+           1. STATE & CONSTANTS
+           ========================================================== */
+        var grid = document.querySelector(".grid");
+        var frontLayer = document.getElementById("frontLayer");
+
+        var HOLD_MS = 500;
+
+        var LEVEL_COLORS = { ouranos: "#ffffff", gaia: "#808080", hades: "#000000" };
+        /* the floor grid's line color in each level: the tool
+           grid's gray #c0c0c0 on Ouranos, black on Gaia, white on
+           Hades. The floor's field and its fog take LEVEL_COLORS. */
+        var FLOOR_LINE_COLORS = { ouranos: "#c0c0c0", gaia: "#000000", hades: "#ffffff" };
+        var LEVEL_HEIGHT = { hades: 0, gaia: 1, ouranos: 2 };
+        var LEVEL_ORDER = ["ouranos", "gaia", "hades"];
+        var LEVEL_KEY = "sarahos-level";
+
+        /* the level — and only the level — is remembered across
+           loads: on navigation it is written to storage under
+           LEVEL_KEY, and at init it is read back when it is exactly
+           one of the three levels, otherwise Gaia. Storage that is
+           blocked or unavailable degrades silently to the
+           in-memory behaviour; the page never breaks over it. */
+        function readStoredLevel() {
+          try {
+            var v = window.localStorage.getItem(LEVEL_KEY);
+            if (v === "ouranos" || v === "gaia" || v === "hades") return v;
+          } catch (err) {}
+          return "gaia";
+        }
+
+        function persistLevel(v) {
+          try {
+            window.localStorage.setItem(LEVEL_KEY, v);
+          } catch (err) {}
+        }
+
+        function contrastFor(lvl) { return lvl === "hades" ? "#ffffff" : "#000000"; }
+
+        /* the circle of 7, in order — Red, Orange, Yellow, Green,
+           Blue, Violet, Magenta. A panel's color is its stored
+           index into this array. */
+        var CIRCLE = ["#f71a1a", "#f7931a", "#f7f71a", "#1af71a", "#1a7ef7", "#891af7", "#f71af7"];
+
+        /* — camera & scene —
+           One unit is one meter. The eye stands at Sarah's
+           height, held in the now (sarah.height). Walking is
+           3.0 m/s at full deflection, linear in the deflection;
+           the right stick looks on a squared response curve
+           capped at 1.5 rad/s, a scene drag at 0.004 rad/px, and
+           pitch is clamped to ±85°. The floor's fog runs from
+           10 m to 55 m, the vertical field of view is 70°, and
+           the scene renders at up to twice the CSS pixel size.
+           A floor line holds full strength out to 0.5 CSS px
+           from its center and reaches zero at 1.0 CSS px — the
+           page's one-pixel line standard, in world space. */
+        var EYE_HEIGHT = now.sarah.height;
+        var WALK_SPEED = 3.0;
+        var LOOK_RATE = 1.5;
+        var MOUSE_LOOK = 0.004;
+        var PITCH_MAX = 85 * Math.PI / 180;
+        var FOG_NEAR = 10;
+        var FOG_FAR = 55;
+        var FOV_VERTICAL = 70;
+        var DPR_MAX = 2;
+        var LINE_CORE = 0.5;
+        var LINE_EDGE = 1.0;
+
+        var level = readStoredLevel();
+        var tooling = false;
+        var panels = [];
+        var navBtns = [];
+        var sticks = [];
+        var stickDrags = {};
+        var drag = null;
+        var keysDown = {};
+        var sceneDrags = {};
+
+        /* ==========================================================
+           2. METRICS & PANELS
+           ========================================================== */
+        function metrics() {
+          var cs = getComputedStyle(document.documentElement);
+          var rect = grid.getBoundingClientRect();
+          var cols = parseInt(cs.getPropertyValue("--cols"), 10);
+          return {
+            cols: cols,
+            rows: parseInt(cs.getPropertyValue("--rows"), 10),
+            cell: rect.width / cols,
+            rect: rect
+          };
+        }
+
+        function clamp(v, lo, hi) {
+          return Math.max(lo, Math.min(hi, v));
+        }
+
+        function isValidColor(v) {
+          return typeof v === "number" && isFinite(v) && Math.floor(v) === v && v >= 0 && v < CIRCLE.length;
+        }
+
+        function applyColor(p) {
+          p.el.style.setProperty("--panel-color", CIRCLE[isValidColor(p.color) ? p.color : 0]);
+        }
+
+        /* the next color handed out is the least-used color among
+           live panels, ties broken by earliest circle order — so
+           spawns cycle the 7 in order, and a deleted panel's color
+           is the next one handed out */
+        function nextColor() {
+          var counts = [0, 0, 0, 0, 0, 0, 0];
+          var best = 0;
+          var i;
+          for (i = 0; i < panels.length; i++) {
+            if (isValidColor(panels[i].color)) counts[panels[i].color]++;
+          }
+          for (i = 1; i < CIRCLE.length; i++) {
+            if (counts[i] < counts[best]) best = i;
+          }
+          return best;
+        }
+
+        function place(p) {
+          var m = metrics();
+          p.el.style.left = p.col * m.cell + "px";
+          p.el.style.top = p.row * m.cell + "px";
+          p.el.style.width = p.w * m.cell + "px";
+          p.el.style.height = p.h * m.cell + "px";
+        }
+
+        function syncZ() {
+          for (var i = 0; i < panels.length; i++) {
+            panels[i].el.style.zIndex = i + 1;
+          }
+        }
+
+        function bringToFront(p) {
+          var i = panels.indexOf(p);
+          if (i >= 0 && i !== panels.length - 1) {
+            panels.splice(i, 1);
+            panels.push(p);
+          }
+          syncZ();
+        }
+
+        function createPanel(col, row, w, h, color) {
+          var el = document.createElement("div");
+          el.className = "panel";
+          var del = document.createElement("div");
+          del.className = "del";
+          /* no child glyph: the × is drawn by the .del::before and
+             ::after bars (see the corner CSS) */
+          el.appendChild(del);
+          var grip = document.createElement("div");
+          grip.className = "grip";
+          el.appendChild(grip);
+          grid.appendChild(el);
+          var p = {
+            el: el, col: col, row: row, w: w, h: h,
+            color: isValidColor(color) ? color : nextColor()
+          };
+          el._panel = p;
+          applyColor(p);
+          del.addEventListener("pointerdown", function (e) {
+            /* the × deletes at once; the press does not also start
+               a move, a resize, or a canvas press */
+            e.stopPropagation();
+            e.preventDefault();
+            deletePanel(p);
+          });
+          panels.push(p);
+          bringToFront(p);
+          place(p);
+          return p;
+        }
+
+        function deletePanel(p) {
+          var i = panels.indexOf(p);
+          if (i >= 0) panels.splice(i, 1);
+          if (p.el.parentNode) p.el.parentNode.removeChild(p.el);
+          syncZ();
+        }
+
+        /* ==========================================================
+           3. VIEW — the level, the tool, and the nav circles
+           ========================================================== */
+        function destinationsFor(lvl) {
+          var dests = LEVEL_ORDER.filter(function (l) { return l !== lvl; });
+          dests.sort(function (a, b) { return LEVEL_HEIGHT[b] - LEVEL_HEIGHT[a]; });
+          return dests;
+        }
+
+        /* the two nav spots: 2×2 squares at row index 1, in columns
+           1 and 3 (spot index 1 and 2 of the row's three spot
+           positions, 2i-1) at the TOP LEFT — the exact cells of
+           Sarah's screenshot of 2026-11-17, one cell in from the
+           left edge — so the doors stay clear of the phone-call
+           UI that covers the top right — the highest destination
+           takes the left spot */
+        function spotCol(idx, cols) { return 2 * idx - 1; }
+
+        function layoutNav() {
+          var m = metrics();
+          var dests = destinationsFor(level);
+          for (var i = 0; i < navBtns.length; i++) {
+            var el = navBtns[i];
+            var dest = dests[i];
+            var spot = spotCol(1 + i, m.cols);
+            var d = 1.5 * m.cell;
+            el._dest = dest;
+            el.setAttribute("data-dest", dest || "");
+            el.setAttribute("aria-label", dest || "");
+            el.style.left = (spot * m.cell + 0.25 * m.cell) + "px";
+            el.style.top = (1 * m.cell + 0.25 * m.cell) + "px";
+            el.style.width = d + "px";
+            el.style.height = d + "px";
+            el.style.background = dest ? LEVEL_COLORS[dest] : "transparent";
+            el.style.display = (!tooling && dest) ? "" : "none";
+          }
+        }
+
+        /* the thumbsticks: each base is the 3×3 square one cell
+           in from its side edge and one cell up from the bottom
+           (columns 1 and COLS−4, row ROWS−4), the knob half the
+           base across. Both take the level's contrast tone. A
+           stick under a live drag keeps its deflection across a
+           relayout; an idle stick rests at exact center. */
+        function layoutSticks() {
+          var m = metrics();
+          var tone = contrastFor(level);
+          for (var i = 0; i < sticks.length; i++) {
+            var s = sticks[i];
+            var size = 3 * m.cell;
+            s.el.style.left = (i === 0 ? 1 : m.cols - 4) * m.cell + "px";
+            s.el.style.top = (m.rows - 4) * m.cell + "px";
+            s.el.style.width = size + "px";
+            s.el.style.height = size + "px";
+            s.el.style.borderColor = tone;
+            s.el.style.display = !tooling ? "" : "none";
+            var ksize = 1.5 * m.cell;
+            s.knob.style.width = ksize + "px";
+            s.knob.style.height = ksize + "px";
+            s.knob.style.background = tone;
+            var dragging = s.activePointer !== null && !!stickDrags[s.activePointer];
+            if (!dragging) {
+              s.knob.style.transform = "translate(-50%, -50%)";
+              s.dx = 0; s.dy = 0;
+            }
+          }
+        }
+
+        function applyView() {
+          document.body.setAttribute("data-level", level);
+          document.body.setAttribute("data-tooling", tooling ? "true" : "false");
+          var bg = tooling ? "#ffffff" : LEVEL_COLORS[level];
+          document.documentElement.style.background = bg;
+          document.body.style.backgroundColor = bg;
+          grid.classList.toggle("is-front", !tooling);
+          for (var i = 0; i < panels.length; i++) {
+            panels[i].el.style.display = tooling ? "" : "none";
+          }
+          layoutNav();
+          layoutSticks();
+        }
+
+        function createNav() {
+          for (var i = 0; i < 2; i++) {
+            var nb = document.createElement("div");
+            nb.className = "nav-btn";
+            grid.appendChild(nb);
+            navBtns.push(nb);
+          }
+        }
+
+        function createSticks() {
+          for (var i = 0; i < 2; i++) {
+            var el = document.createElement("div");
+            el.className = "thumbstick";
+            el.setAttribute("data-side", i === 0 ? "left" : "right");
+            var knob = document.createElement("div");
+            knob.className = "thumbstick-knob";
+            el.appendChild(knob);
+            grid.appendChild(el);
+            sticks.push({ el: el, knob: knob, dx: 0, dy: 0, activePointer: null });
+          }
+        }
+
+        /* stick drags are kept per pointer — stickDrags maps a
+           pointerId to {stick, cx, cy}, the stick it holds and
+           the stick's center in client coordinates — so the two
+           sticks drag independently under two pointers at once */
+        function stickFromEvent(e) {
+          if (!e.target || !e.target.closest) return null;
+          var el = e.target.closest(".thumbstick");
+          if (!el) return null;
+          for (var i = 0; i < sticks.length; i++) if (sticks[i].el === el) return sticks[i];
+          return null;
+        }
+
+        function centerKnob(s) {
+          s.dx = 0; s.dy = 0; s.activePointer = null;
+          s.knob.style.transform = "translate(-50%, -50%)";
+        }
+
+        /* the knob follows its pointer from the stick's center,
+           the deflection clamped to a radius of 0.75 cells */
+        function moveStickDrag(e) {
+          var sd = stickDrags[e.pointerId];
+          if (!sd) return;
+          var m = metrics();
+          var dx = e.clientX - sd.cx;
+          var dy = e.clientY - sd.cy;
+          var max = 0.75 * m.cell;
+          var len = Math.sqrt(dx * dx + dy * dy);
+          if (len > max && len > 0) { dx = dx / len * max; dy = dy / len * max; }
+          sd.stick.dx = dx; sd.stick.dy = dy;
+          sd.stick.knob.style.transform = "translate(calc(-50% + " + dx + "px), calc(-50% + " + dy + "px))";
+        }
+
+        /* ==========================================================
+           4. THE SCENE & THE CAMERA — one first-person camera
+           serves the whole cyberspace, shared across levels:
+           travelling keeps its position and facing and re-colors
+           the world around it. The camera lives in memory only;
+           a reload stands it at the origin again, facing north
+           (yaw 0 looks down −Z; positive yaw turns right). Its
+           live state is the page's window.sarahOSCamera — the
+           {x, z, yaw, pitch} object itself — so the camera can
+           be read, and driven, from outside the page.
+
+           The scene is a blank holodeck floor, hand-rolled WebGL
+           with zero dependencies. A fullscreen triangle is
+           raycast in the fragment shader: each pixel's ray from
+           the camera meets the y=0 plane, and the grid is drawn
+           procedurally from the world coordinates there, so the
+           floor is infinite — no geometry, no edge. Lines fall
+           every 1.0 m in the level's floor line color over a
+           field of the level's own color, and fade into fog the
+           color of the level between FOG_NEAR and FOG_FAR, so
+           the horizon dissolves into the void — in Gaia there
+           is no dissolve: the floor runs to the sky and lands
+           at its sharp line. The scene holds the floor — its origin marked by a crosshair in Ramjet blue, two segments of 2 m through (0, 0) at the floor's own line standard, fogged with the floor — and, over Gaia, a living sky: drawn behind the floor by the sky module (sky/sky.js), opaque above the horizon, the floor running unfogged to meet it at a sharp line. In Gaia, two gifts stand on the floor ahead of the origin, drawn over it by the gifts module (gifts/gifts.js): a figure in two forms — one standing, one animated, a boolean button choosing between them, the animated one transforming at the press of a button — and a small chest of drawers with a framed photograph on top — and the realms stand on it.
+
+           Line weight is the page standard — a 1 CSS px
+           full-strength core, the tool grid's weight: the shader
+           measures each pixel's distance to the nearest line
+           center in CSS px — the world distance divided by the
+           screen-space gradient of the world coordinates (the
+           derivative pair dFdx/dFdy, whose length is world per
+           drawing-buffer px along the line's perpendicular),
+           then by uDpr, the buffer-to-CSS ratio — holds full
+           intensity out to LINE_CORE, then falls linearly to
+           zero at LINE_EDGE: only the minimal anti-aliased
+           fringe past the core.
+           ========================================================== */
+        var camera = { x: 0, z: 0, yaw: 0, pitch: 0 };
+        window.sarahOSCamera = camera;
+
+        var glCanvas = document.getElementById("gl");
+        var gl = null;
+        var glProg = null;
+        var glU = {};
+        var glIs2 = false;
+        /* drawing-buffer px per CSS px at the size sizeScene
+           renders; the floor shader divides its gradient by
+           this, so its line thresholds are in CSS px on any
+           display */
+        var glPxScale = 1;
+
+        function hexRGB(hex) {
+          return [
+            parseInt(hex.slice(1, 3), 16) / 255,
+            parseInt(hex.slice(3, 5), 16) / 255,
+            parseInt(hex.slice(5, 7), 16) / 255
+          ];
+        }
+
+        function initScene() {
+          /* one shader body, two dialects: WebGL2 and WebGL1
+             differ only in the header lines and in how the
+             fragment color leaves main, so the body is written
+             once and each dialect wraps it. The fog range and
+             the line profile enter the body from the section 1
+             constants, as one-decimal literals. */
+          function glsl(n) { return n.toFixed(1); }
+          var fragBody = [
+            "  vec3 dir = normalize(uFwd + vNdc.x * uTan * uAspect * uRight + vNdc.y * uTan * uUp);",
+            "  vec3 col = uLevel;",
+            "  if (dir.y < 0.0) {",
+            "    float t = -uCam.y / dir.y;",
+            "    vec3 wp = uCam + dir * t;",
+            "    vec2 coord = wp.xz;",
+            "    vec2 gradX = vec2(dFdx(coord.x), dFdy(coord.x));",
+            "    vec2 gradY = vec2(dFdx(coord.y), dFdy(coord.y));",
+            "    vec2 distW = abs(fract(coord - 0.5) - 0.5);",
+            "    vec2 distPx = vec2(distW.x / max(length(gradX), 0.00001), distW.y / max(length(gradY), 0.00001)) / uDpr;",
+            "    float dPx = min(distPx.x, distPx.y);",
+            "    float grid = clamp((" + glsl(LINE_EDGE) + " - dPx) / " + glsl(LINE_EDGE - LINE_CORE) + ", 0.0, 1.0);",
+            "    float fog = uFog * smoothstep(" + glsl(FOG_NEAR) + ", " + glsl(FOG_FAR) + ", t);",
+            "    col = mix(uLevel, uLine, grid * (1.0 - fog));",
+            "    vec2 axisFp = vec2(max(length(gradX), 0.00001), max(length(gradY), 0.00001));",
+            "    float dPxX = max(max(abs(wp.x) - 1.0, 0.0) / axisFp.x, abs(wp.z) / axisFp.y) / uDpr;",
+            "    float dPxZ = max(abs(wp.x) / axisFp.x, max(abs(wp.z) - 1.0, 0.0) / axisFp.y) / uDpr;",
+            "    float dCrossPx = min(dPxX, dPxZ);",
+            "    float cross = clamp((" + glsl(LINE_EDGE) + " - dCrossPx) / " + glsl(LINE_EDGE - LINE_CORE) + ", 0.0, 1.0);",
+            "    if (uHorizon > 0.5) cross *= 1.0 - smoothstep(20.0, 60.0, t);",
+            "    col = mix(col, uCross, cross * (1.0 - fog));",
+            "  }"
+          ];
+          var v2 = [
+            "#version 300 es",
+            "layout(location=0) in vec2 aPos;",
+            "out vec2 vNdc;",
+            "void main(){ vNdc = aPos; gl_Position = vec4(aPos, 0.0, 1.0); }"
+          ].join("\n");
+          var f2 = [
+            "#version 300 es",
+            "precision highp float;",
+            "in vec2 vNdc;",
+            "out vec4 oColor;",
+            "uniform vec3 uCam, uFwd, uRight, uUp, uLevel, uLine, uCross;",
+            "uniform float uFog, uHorizon;",
+            "uniform float uTan, uAspect, uDpr;",
+            "void main(){"
+          ].concat(fragBody, [
+            "  oColor = vec4(col, 1.0);",
+            "}"
+          ]).join("\n");
+          var v1 = [
+            "attribute vec2 aPos;",
+            "varying vec2 vNdc;",
+            "void main(){ vNdc = aPos; gl_Position = vec4(aPos, 0.0, 1.0); }"
+          ].join("\n");
+          var f1 = [
+            "#extension GL_OES_standard_derivatives : enable",
+            "precision highp float;",
+            "varying vec2 vNdc;",
+            "uniform vec3 uCam, uFwd, uRight, uUp, uLevel, uLine, uCross;",
+            "uniform float uFog, uHorizon;",
+            "uniform float uTan, uAspect, uDpr;",
+            "void main(){"
+          ].concat(fragBody, [
+            "  gl_FragColor = vec4(col, 1.0);",
+            "}"
+          ]).join("\n");
+
+          var ctx = null;
+          try { ctx = glCanvas.getContext("webgl2"); } catch (err) {}
+          if (ctx) { glIs2 = true; } else {
+            try { ctx = glCanvas.getContext("webgl") || glCanvas.getContext("experimental-webgl"); } catch (err) {}
+            if (ctx) ctx.getExtension("OES_standard_derivatives");
+          }
+          if (!ctx) return;
+          gl = ctx;
+
+          function sh(type, src) {
+            var s = gl.createShader(type);
+            gl.shaderSource(s, src);
+            gl.compileShader(s);
+            return s;
+          }
+          glProg = gl.createProgram();
+          gl.attachShader(glProg, sh(gl.VERTEX_SHADER, glIs2 ? v2 : v1));
+          gl.attachShader(glProg, sh(gl.FRAGMENT_SHADER, glIs2 ? f2 : f1));
+          gl.linkProgram(glProg);
+          if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) { gl = null; return; }
+          gl.useProgram(glProg);
+          ["uCam", "uFwd", "uRight", "uUp", "uLevel", "uLine", "uCross", "uFog", "uHorizon", "uTan", "uAspect", "uDpr"].forEach(function (n) {
+            glU[n] = gl.getUniformLocation(glProg, n);
+          });
+          var buf = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+          if (glIs2) {
+            gl.enableVertexAttribArray(0);
+            gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+          } else {
+            var loc = gl.getAttribLocation(glProg, "aPos");
+            gl.enableVertexAttribArray(loc);
+            gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+          }
+          sizeScene();
+        }
+
+        function sizeScene() {
+          if (!gl) return;
+          var dpr = Math.min(window.devicePixelRatio || 1, DPR_MAX);
+          var w = Math.round(window.innerWidth * dpr);
+          var h = Math.round(window.innerHeight * dpr);
+          if (glCanvas.width !== w || glCanvas.height !== h) {
+            glCanvas.width = w;
+            glCanvas.height = h;
+          }
+          glPxScale = window.innerWidth > 0 ? glCanvas.width / window.innerWidth : dpr;
+        }
+
+        function drawScene() {
+          if (!gl || !glProg) return;
+          sizeScene();
+          gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+          var cy = Math.cos(camera.yaw), sy = Math.sin(camera.yaw);
+          var cp = Math.cos(camera.pitch), sp = Math.sin(camera.pitch);
+          var fwd = [sy * cp, sp, -cy * cp];
+          var right = [cy, 0, sy];
+          var up = [
+            right[1] * fwd[2] - right[2] * fwd[1],
+            right[2] * fwd[0] - right[0] * fwd[2],
+            right[0] * fwd[1] - right[1] * fwd[0]
+          ];
+          var lc = hexRGB(LEVEL_COLORS[level]);
+          var ln = hexRGB(FLOOR_LINE_COLORS[level]);
+          gl.uniform3f(glU.uCam, camera.x, EYE_HEIGHT, camera.z);
+          gl.uniform3f(glU.uFwd, fwd[0], fwd[1], fwd[2]);
+          gl.uniform3f(glU.uRight, right[0], right[1], right[2]);
+          gl.uniform3f(glU.uUp, up[0], up[1], up[2]);
+          gl.uniform3f(glU.uLevel, lc[0], lc[1], lc[2]);
+          gl.uniform3f(glU.uLine, ln[0], ln[1], ln[2]);
+          var cr = hexRGB("#1a7ef7");
+          gl.uniform3f(glU.uCross, cr[0], cr[1], cr[2]);
+          gl.uniform1f(glU.uFog, level === "gaia" ? 0.0 : 1.0);
+          gl.uniform1f(glU.uHorizon, level === "gaia" ? 1.0 : 0.0);
+          gl.uniform1f(glU.uTan, Math.tan(FOV_VERTICAL / 2 * Math.PI / 180));
+          gl.uniform1f(glU.uAspect, glCanvas.width / Math.max(1, glCanvas.height));
+          gl.uniform1f(glU.uDpr, glPxScale);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+        }
+
+        /* one frame of input, integrated with dt so motion is
+           frame-rate independent. The left stick and WASD move in
+           the facing frame, projected onto the ground plane (no
+           flying, no head-bob); the right stick looks. Combined
+           input is capped at unit magnitude, so full speed is
+           exactly WALK_SPEED, never more. Movement stays linear
+           in deflection; the right stick alone is curved (below). */
+        function stepCamera(dt) {
+          var m = metrics();
+          var max = 0.75 * m.cell;
+          var f = 0, s = 0, lx = 0, ly = 0;
+          if (sticks[0] && max > 0) { lx = sticks[0].dx / max; ly = sticks[0].dy / max; }
+          f += -ly; s += lx;
+          if (keysDown["w"]) f += 1;
+          if (keysDown["s"]) f -= 1;
+          if (keysDown["d"]) s += 1;
+          if (keysDown["a"]) s -= 1;
+          var len = Math.sqrt(f * f + s * s);
+          if (len > 1) { f /= len; s /= len; }
+          if (len > 0) {
+            var cy = Math.cos(camera.yaw), sy = Math.sin(camera.yaw);
+            /* ground-plane forward (sin yaw, −cos yaw) and right (cos yaw, sin yaw) */
+            camera.x += (sy * f + cy * s) * WALK_SPEED * dt;
+            camera.z += (-cy * f + sy * s) * WALK_SPEED * dt;
+          }
+          if (sticks[1] && max > 0) {
+            var rx = sticks[1].dx / max, ry = sticks[1].dy / max;
+            var rl = Math.sqrt(rx * rx + ry * ry);
+            if (rl > 1) { rx /= rl; ry /= rl; }
+            /* squared response curve per axis: rate = sign(d) × d² × LOOK_RATE,
+               so 50% deflection gives 25% of max, 25% gives 6.25% */
+            var crx = rx * Math.abs(rx);
+            var cry = ry * Math.abs(ry);
+            camera.yaw += crx * LOOK_RATE * dt;
+            camera.pitch = clamp(camera.pitch - cry * LOOK_RATE * dt, -PITCH_MAX, PITCH_MAX);
+          }
+        }
+
+        var lastFrameTs = null;
+        function frameLoop(ts) {
+          requestAnimationFrame(frameLoop);
+          if (lastFrameTs === null) lastFrameTs = ts;
+          var dt = Math.min(0.05, Math.max(0, (ts - lastFrameTs) / 1000));
+          lastFrameTs = ts;
+          if (tooling) return; /* the scene is paused behind the tool */
+          stepCamera(dt);
+          drawScene();
+        }
+
+        /* ==========================================================
+           5. THE PRESS MACHINE — one machine owns every press, in
+           both views, whichever surface it lands on.
+
+           · A press is born on pointerdown and dies on that same
+             pointer's release. Releases are heard on the window,
+             not on the pressed element, because the view changes
+             under a still-held press — the toggle a hold fires
+             re-skins the page and hides the nav circles — and the
+             window hears the release wherever the press began.
+           · The machine tracks every pointer currently down. When
+             the last one lifts, all gesture state resets
+             unconditionally; a fresh pointerdown that finds a press
+             whose pointer is no longer down discards that press and
+             starts clean. There is no count, no cooldown and no
+             limit on toggles: hold, release, hold again — each
+             press re-arms at once.
+           · A press is judged by the button, never by the pointer's
+             presence: a trackpad finger resting on the pad before
+             or after the click is not a press, and a re-click in
+             place, with no leave and no re-enter, is a brand-new
+             press.
+           · Held for HOLD_MS within its slop, a press on empty
+             space toggles the tool — in the front it raises the
+             tool; in the tool it lowers it, back to the front of
+             the level the tool was entered from — and its release
+             then does nothing. In the tool the hold works
+             anywhere: on the canvas, and on the empty page around
+             it, exactly as it does in the front. The slop is the
+             pointer's own: a resting thumb rolls further than a
+             mouse, so touch is allowed 20px where a precise pointer
+             is held to 10px.
+           · Released quickly, a front press on a nav circle travels
+             to that circle's level; a tool press on empty canvas
+             spawns a panel on release. Movement past the slop
+             cancels a press, and a cancelled press does nothing on
+             release — no spawn and no toggle.
+           · A second pointer starts nothing of its own; it only
+             cancels the pending press — hold and spawn alike — and
+             the cancellation is total: when every pointer has
+             lifted, nothing of the press remains. Presses on a
+             panel, its grip, or its × belong to the panel gestures
+             (section 6) and never start a press here.
+           · A press on a thumbstick belongs to the stick: it opens
+             a per-pointer stick drag (the two sticks are the one
+             place two pointers act at once, one drag each), and it
+             never navigates and never raises the tool — a hold on
+             a stick is a stick held, nothing more. While any stick
+             drag is live, a press anywhere else starts nothing.
+           ========================================================== */
+        var press = null;
+        var downPointers = {};
+
+        function clearPressTimer() {
+          if (press && press.timer) {
+            clearTimeout(press.timer);
+            press.timer = null;
+          }
+        }
+
+        function endDragVisual() {
+          if (!drag) return;
+          drag.panel.el.classList.remove("dragging");
+          grid.classList.remove("dragging");
+          grid.classList.remove("resizing");
+        }
+
+        /* drop every gesture in flight, view untouched: used when
+           the page itself is interrupted (blur, hidden, resized) —
+           moments when a release may never arrive */
+        function resetGestures() {
+          clearPressTimer();
+          press = null;
+          endDragVisual();
+          drag = null;
+          for (var pid in stickDrags) {
+            if (Object.prototype.hasOwnProperty.call(stickDrags, pid)) centerKnob(stickDrags[pid].stick);
+          }
+          stickDrags = {};
+          sceneDrags = {};
+          keysDown = {};
+          downPointers = {};
+        }
+
+        function startPress(e, mode, dest) {
+          var cur = {
+            pointerId: e.pointerId,
+            mode: mode,
+            dest: dest || null,
+            clientX: e.clientX,
+            clientY: e.clientY,
+            x: 0, y: 0,
+            slop: e.pointerType === "touch" ? 20 : 10,
+            fired: false,
+            cancelled: false,
+            killed: false,
+            timer: null
+          };
+          if (mode === "canvas") {
+            var m = metrics();
+            cur.x = e.clientX - m.rect.left;
+            cur.y = e.clientY - m.rect.top;
+          }
+          press = cur;
+          cur.timer = setTimeout(function () {
+            if (press !== cur || cur.cancelled || cur.killed) return;
+            if (!downPointers[cur.pointerId]) return;
+            cur.fired = true;
+            cur.timer = null;
+            /* the hold toggles the tool: a front press raises it;
+               a tool press (on the canvas, or on the empty page
+               around it) lowers it, back to the front of the level
+               the tool was entered from — the level never changes
+               here */
+            tooling = cur.mode === "front";
+            applyView();
+          }, HOLD_MS);
+          return cur;
+        }
+
+        /* judge a finished press: called exactly once per press,
+           on its own pointer's release */
+        function finishPress(cur, cancelled) {
+          if (cancelled || cur.fired || cur.killed) return;
+          if (cur.mode === "front") {
+            if (!cur.cancelled && cur.dest) {
+              level = cur.dest;
+              persistLevel(level);
+              applyView();
+            }
+          } else if (cur.mode === "canvas") {
+            if (!cur.cancelled) {
+              /* quick tap on empty canvas: a new 3×3 panel centered
+                 on the pressed cell, clamped inside the canvas */
+              var pm = metrics();
+              var w = Math.min(3, pm.cols);
+              var h = Math.min(3, pm.rows);
+              var col = clamp(Math.floor(cur.x / pm.cell) - Math.floor(w / 2), 0, pm.cols - w);
+              var row = clamp(Math.floor(cur.y / pm.cell) - Math.floor(h / 2), 0, pm.rows - h);
+              createPanel(col, row, w, h, null);
+            }
+          }
+          /* mode "void" — a press on the empty page around the
+             canvas in the tool: only its hold acts; its release
+             does nothing */
+        }
+
+        function onPressDown(e, surface) {
+          downPointers[e.pointerId] = true;
+          /* a stick drag whose pointer is no longer down is over,
+             however its release was lost: center its knob and drop
+             it, as with any stale gesture below */
+          for (var spid in stickDrags) {
+            if (Object.prototype.hasOwnProperty.call(stickDrags, spid) && !downPointers[spid] && String(e.pointerId) !== spid) {
+              centerKnob(stickDrags[spid].stick);
+              delete stickDrags[spid];
+            }
+          }
+          /* a gesture whose pointer is no longer down is over,
+             however its release was lost: discard it before judging
+             this press, so a lost release can never block a later
+             press */
+          if (press && press.pointerId !== e.pointerId && !downPointers[press.pointerId]) {
+            clearPressTimer();
+            press = null;
+          }
+          if (drag && drag.pointerId !== e.pointerId && !downPointers[drag.pointerId]) {
+            endDragVisual();
+            drag = null;
+          }
+          if (press) {
+            if (press.pointerId === e.pointerId) {
+              /* the same pointer pressing again without the machine
+                 having seen a release (a trackpad re-click in
+                 place): the earlier press is over — start this one
+                 fresh */
+              clearPressTimer();
+              press = null;
+            } else {
+              /* a second pointer while a press is live: it starts
+                 nothing of its own and cancels the pending press
+                 outright (single-pointer language throughout) */
+              clearPressTimer();
+              press.cancelled = true;
+              press.killed = true;
+              delete sceneDrags[press.pointerId];
+              e.preventDefault();
+              return;
+            }
+          }
+          if (drag) {
+            /* a panel gesture is already in progress: a second
+               pointer starts nothing */
+            e.preventDefault();
+            return;
+          }
+          /* a press on a stick opens that stick's drag for this
+             pointer — the machine above has already judged any
+             press or panel drag in flight, so the stick starts
+             clean, and a second stick's press is welcomed
+             alongside the first */
+          var stickHit = (!tooling && surface === "grid") ? stickFromEvent(e) : null;
+          if (stickHit) {
+            var srect = stickHit.el.getBoundingClientRect();
+            stickDrags[e.pointerId] = { stick: stickHit, cx: srect.left + srect.width / 2, cy: srect.top + srect.height / 2 };
+            stickHit.activePointer = e.pointerId;
+            if (grid && grid.setPointerCapture) { try { grid.setPointerCapture(e.pointerId); } catch (err) {} }
+            e.preventDefault();
+            return;
+          }
+          if (Object.keys(stickDrags).length > 0) {
+            /* a non-stick press while a stick is held starts nothing */
+            e.preventDefault();
+            return;
+          }
+          if (!tooling) {
+            var dest = null;
+            if (surface === "grid") {
+              var navEl = e.target.closest ? e.target.closest(".nav-btn") : null;
+              dest = navEl ? navEl._dest : null;
+            }
+            startPress(e, "front", dest);
+            if (!dest) {
+              /* a press on the scene itself (not a door): its own
+                 pointer class, like a stick drag — if it drags
+                 past the slop it becomes a look-drag (the press
+                 machine cancels the press, so it can never raise
+                 the tool); a stationary hold still toggles */
+              sceneDrags[e.pointerId] = {
+                x0: e.clientX, y0: e.clientY,
+                lastX: e.clientX, lastY: e.clientY,
+                active: false
+              };
+            }
+          } else if (surface === "front") {
+            /* the empty page around the canvas, in the tool: the
+               hold works here too — it is the same door */
+            startPress(e, "void", null);
+          } else {
+            var m = metrics();
+            var x = e.clientX - m.rect.left;
+            var y = e.clientY - m.rect.top;
+            var panelEl = e.target.closest ? e.target.closest(".panel") : null;
+            var onGrip = e.target.closest ? !!e.target.closest(".grip") : false;
+            var onDel = e.target.closest ? !!e.target.closest(".del") : false;
+            if (onDel) return;
+            if (panelEl) {
+              /* press on a panel: move it, or resize it from its
+                 grip (section 6); a panel press never starts a
+                 press here */
+              startPanelDrag(e, panelEl._panel, onGrip, x, y, m);
+            } else {
+              /* press on empty canvas: held in reserve — the hold
+                 and the spawn are both judged from this one press */
+              startPress(e, "canvas", null);
+            }
+          }
+          var surfaceEl = surface === "front" ? frontLayer : grid;
+          if (surfaceEl && surfaceEl.setPointerCapture) {
+            try { surfaceEl.setPointerCapture(e.pointerId); } catch (err) {}
+          }
+          e.preventDefault();
+        }
+
+        /* ==========================================================
+           6. PANEL GESTURES — a press on a panel moves it; a press
+           on its grip resizes it. Moves are heard on the window
+           (section 7), so a drag runs wherever the pointer goes.
+           ========================================================== */
+        function startPanelDrag(e, p, onGrip, x, y, m) {
+          bringToFront(p);
+          if (onGrip) {
+            drag = { panel: p, mode: "resize", pointerId: e.pointerId };
+            grid.classList.add("resizing");
+          } else {
+            drag = {
+              panel: p, mode: "move", pointerId: e.pointerId,
+              dx: x - p.col * m.cell, dy: y - p.row * m.cell
+            };
+            /* the cursor follows the drag state for the whole
+               drag: grabbing on the panel itself, and on the grid
+               that holds the pointer capture */
+            p.el.classList.add("dragging");
+            grid.classList.add("dragging");
+          }
+        }
+
+        function movePanelDrag(e) {
+          var m = metrics();
+          var x = e.clientX - m.rect.left;
+          var y = e.clientY - m.rect.top;
+          var p = drag.panel;
+          if (drag.mode === "move") {
+            p.col = clamp(Math.round((x - drag.dx) / m.cell), 0, m.cols - p.w);
+            p.row = clamp(Math.round((y - drag.dy) / m.cell), 0, m.rows - p.h);
+          } else {
+            /* resize: width and height follow the pointer from the
+               panel's top-left corner independently, each in whole
+               cells and never below the 2×2 minimum, so a panel can
+               become any rectangle the canvas still holds */
+            p.w = clamp(Math.ceil((x - p.col * m.cell) / m.cell), 2, m.cols - p.col);
+            p.h = clamp(Math.ceil((y - p.row * m.cell) / m.cell), 2, m.rows - p.row);
+          }
+          place(p);
+        }
+
+        /* ==========================================================
+           7. WIRING — presses land on one of two surfaces: the
+           front layer (the page around the canvas, in both views)
+           or the grid (the canvas itself). Both feed the one press
+           machine. Moves and releases are heard on the window:
+           they belong to the press, not to the element it started
+           on, and the window hears them even when the view changed
+           under the press and hid that element mid-hold.
+           ========================================================== */
+        frontLayer.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+        frontLayer.addEventListener("pointerdown", function (e) { onPressDown(e, "front"); });
+
+        grid.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+        grid.addEventListener("pointerdown", function (e) { onPressDown(e, "grid"); });
+
+        window.addEventListener("pointermove", function (e) {
+          if (press && e.pointerId === press.pointerId) {
+            if (!press.fired && !press.cancelled) {
+              var dx = e.clientX - press.clientX;
+              var dy = e.clientY - press.clientY;
+              if (dx * dx + dy * dy > press.slop * press.slop) {
+                clearPressTimer();
+                press.cancelled = true;
+              }
+            }
+          }
+          if (stickDrags[e.pointerId]) moveStickDrag(e);
+          if (drag && e.pointerId === drag.pointerId) movePanelDrag(e);
+          var sdg = sceneDrags[e.pointerId];
+          if (sdg && !tooling) {
+            if (!sdg.active) {
+              /* the look-drag begins only once the press machine
+                 has cancelled this press for movement — so a
+                 stationary hold still raises the tool, and a
+                 look-drag never does */
+              if (press && e.pointerId === press.pointerId && press.cancelled) {
+                sdg.active = true;
+                camera.yaw += (e.clientX - sdg.x0) * MOUSE_LOOK;
+                camera.pitch = clamp(camera.pitch - (e.clientY - sdg.y0) * MOUSE_LOOK, -PITCH_MAX, PITCH_MAX);
+                sdg.lastX = e.clientX; sdg.lastY = e.clientY;
+              }
+            } else {
+              camera.yaw += (e.clientX - sdg.lastX) * MOUSE_LOOK;
+              camera.pitch = clamp(camera.pitch - (e.clientY - sdg.lastY) * MOUSE_LOOK, -PITCH_MAX, PITCH_MAX);
+              sdg.lastX = e.clientX; sdg.lastY = e.clientY;
+            }
+          }
+        });
+
+        function onPressUp(e, cancelled) {
+          delete downPointers[e.pointerId];
+          delete sceneDrags[e.pointerId];
+          if (stickDrags[e.pointerId]) {
+            centerKnob(stickDrags[e.pointerId].stick);
+            delete stickDrags[e.pointerId];
+          }
+          if (press && e.pointerId === press.pointerId) {
+            var cur = press;
+            clearPressTimer();
+            press = null;
+            finishPress(cur, cancelled);
+          }
+          if (drag && e.pointerId === drag.pointerId) {
+            endDragVisual();
+            drag = null;
+          }
+          /* once no pointer is down anywhere, no gesture state
+             survives — the machine's standing guarantee, so even a
+             release that never arrived is healed by the next
+             press's sweep or by this reset */
+          if (Object.keys(downPointers).length === 0) resetGestures();
+        }
+        window.addEventListener("pointerup", function (e) { onPressUp(e, false); });
+        window.addEventListener("pointercancel", function (e) { onPressUp(e, true); });
+
+        /* interruptions that can eat a release outright — the app
+           losing focus, the page being hidden — reset the machine
+           instead of leaving it half-armed */
+        window.addEventListener("blur", resetGestures);
+        document.addEventListener("visibilitychange", function () {
+          if (document.hidden) resetGestures();
+        });
+
+        /* ==========================================================
+           8. VIEWPORT & KEYS
+           ========================================================== */
+        window.addEventListener("resize", function () {
+          /* a press in flight across a viewport change is set
+             down, not reinterpreted in the new geometry */
+          resetGestures();
+          var m = metrics();
+          for (var i = 0; i < panels.length; i++) {
+            var p = panels[i];
+            p.w = clamp(p.w, 2, m.cols);
+            p.h = clamp(p.h, 2, m.rows);
+            p.col = clamp(p.col, 0, m.cols - p.w);
+            p.row = clamp(p.row, 0, m.rows - p.h);
+            place(p);
+          }
+          layoutNav();
+          layoutSticks();
+          sizeScene();
+        });
+
+        document.addEventListener("keydown", function (e) {
+          var k = (e.key || "").toLowerCase();
+          if (k === "w" || k === "a" || k === "s" || k === "d") keysDown[k] = true;
+          if (e.key !== "Escape") return;
+          if (tooling) {
+            /* desktop affordance: Escape lowers the tool, back to
+               the front of the level the tool was entered from */
+            resetGestures();
+            tooling = false;
+            applyView();
+          }
+        });
+        document.addEventListener("keyup", function (e) {
+          var k = (e.key || "").toLowerCase();
+          if (k === "w" || k === "a" || k === "s" || k === "d") delete keysDown[k];
+        });
+
+        /* ==========================================================
+           9. INIT — the remembered level (Gaia on a first visit),
+           front view, empty layout
+           ========================================================== */
+        createNav();
+        createSticks();
+        applyView();
+        initScene();
+        requestAnimationFrame(frameLoop);
+        /* ---- the sky seam ----
+           sky/sky.js, loaded before this script, has set
+           window.sarahOSSkyInstall. The page hands the sky
+           the pieces of itself it needs — the GL context
+           and its program, the canvas, the camera, the
+           level read live (it changes), the eye height and
+           the field of view the sky shares with the floor,
+           a frame from the now (now.js), and the floor's
+           own draw — and takes back its draw with the sky
+           hooked in. The sky keeps nothing of the page but
+           what it is handed here. */
+        if (window.sarahOSSkyInstall) {
+          drawScene = window.sarahOSSkyInstall({
+            gl: gl, glCanvas: glCanvas, glIs2: glIs2, glProg: glProg,
+            camera: camera,
+            eyeHeight: EYE_HEIGHT, fovVertical: FOV_VERTICAL,
+            level: function () { return level; },
+            frame: function () { return now.frame(); },
+            drawScene: drawScene
+          });
+        }
+        /* ---- the gifts seam ----
+           gifts/gifts.js, loaded before this script, has set
+           window.emiliaOSGiftsInstall. The page hands the gifts
+           the same pieces it hands the sky, and whether the
+           tool is up (their button hides with the front view),
+           and takes back its draw with the gifts hooked in —
+           outermost, so they stand over floor and sky alike. */
+        if (window.emiliaOSGiftsInstall) {
+          drawScene = window.emiliaOSGiftsInstall({
+            gl: gl, glCanvas: glCanvas, glIs2: glIs2,
+            camera: camera,
+            eyeHeight: EYE_HEIGHT, fovVertical: FOV_VERTICAL,
+            level: function () { return level; },
+            tooling: function () { return tooling; },
+            drawScene: drawScene
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>
